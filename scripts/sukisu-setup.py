@@ -864,6 +864,55 @@ def ensure_driver_links(kdir: Path, su: Path) -> None:
         write(kdir / "drivers/Kconfig", kc + '\nsource "drivers/kernelsu/Kconfig"\n')
 
 
+def patch_susfs_setuid_mark(su: Path) -> None:
+    """Mark zygote children as umounted so the SUSFS inode hooks apply.
+
+    SUSFS checks SUSFS_IS_INODE_* via susfs_is_current_proc_umounted_app(),
+    which needs TIF_PROC_UMOUNTED on the app process.  SukiSU's setuid hook is
+    the equivalent of FinaSU's, but it never set that flag, so sus_path /
+    sus_map / open_redirect entries were accepted by the dispatcher and then
+    ignored for every app.  SELinux still reports the zygote domain after
+    setresuid() (the transition happens at exec), which is why the existing
+    ksu_handle_umount() check works at this point.
+    """
+    path = su / "hook/setuid_hook.c"
+    text = read(path)
+    if "susfs_set_current_proc_umounted" in text:
+        print("  hook/setuid_hook.c: SUSFS app marking already applied")
+        return
+
+    anchor = '#include "feature/mount_hide.h"\n'
+    add = '''#include "feature/mount_hide.h"
+
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/workqueue.h>
+#include <linux/susfs_def.h>
+#include "selinux/selinux.h"
+
+extern struct work_struct susfs_extra_works;
+#endif
+'''
+    text = replace_once(text, anchor, add, "setuid_hook includes")
+
+    anchor = "    // Handle kernel umount\n    ksu_handle_umount(old_uid, new_uid);\n"
+    add = '''    // Handle kernel umount
+    ksu_handle_umount(old_uid, new_uid);
+
+#ifdef CONFIG_KSU_SUSFS
+    /* ksu54_susfs_setuid: mark app processes so SUSFS inode checks apply. */
+    if (is_zygote(current_cred()) &&
+        (is_appuid(new_uid) || new_uid == WEBVIEW_ZYGOTE_UID ||
+         is_isolated_process(new_uid))) {
+        susfs_set_current_proc_umounted();
+        schedule_work(&susfs_extra_works);
+    }
+#endif
+'''
+    text = replace_once(text, anchor, add, "setuid_hook SUSFS marking")
+    write(path, text)
+    print("  hook/setuid_hook.c: mark app processes for SUSFS")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--kernel", default="kernel", help="kernel tree root")
@@ -895,6 +944,7 @@ def main() -> None:
     patch_susfs_dispatch(su)
     patch_susfs_reboot_hook(su)
     patch_susfs_sdcard_monitor(su)
+    patch_susfs_setuid_mark(su)
 
     print("[sukisu-setup] done")
 

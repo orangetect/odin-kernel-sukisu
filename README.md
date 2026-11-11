@@ -33,6 +33,9 @@
 - SukiSU 的 SUSFS 控制面已接上：`reboot(SUSFS_MAGIC, ...)` 命令在 `reboot` kprobe 里
   转入 `task_work`，再分发给 odin `fs/susfs.c` 的各命令处理函数；启动完成时调用
   `susfs_start_sdcard_monitor_fn()`。
+- setuid 钩子会给 zygote 派生的应用进程设置 `TIF_PROC_UMOUNTED`，并调度
+  `susfs_extra_works`；否则 SUSFS 的 `sus_path` / `sus_map` / `open_redirect`
+  规则只会在内核里登记，不会真正命中应用进程。
 - 5.4 兼容层：
   - `struct selinux_policy` / `selinux_state.policy` → `selinux_state.ss` 影子策略；
   - `ksu_dup_sepolicy()` / `ksu_destroy_sepolicy()` 的 5.4 `policydb_write/read` 回移；

@@ -79,6 +79,7 @@ jobs:
           check 'ksu_handle_susfs_command' "$K/extension/susfs_extension.c" 'SUSFS command dispatcher missing'
           check 'SUSFS_MAGIC' "$K/supercall/supercall.c" 'SUSFS reboot hook missing'
           check 'susfs_start_sdcard_monitor_fn' "$K/runtime/boot_event.c" 'SUSFS sdcard monitor call missing'
+          check 'susfs_set_current_proc_umounted' "$K/hook/setuid_hook.c" 'SUSFS app-process marking missing'
           if grep -q 'ksu_handle_execveat' kernel/fs/exec.c; then
             echo "::error::legacy ksu_handle_execveat call site still present in fs/exec.c"
             fail=1
