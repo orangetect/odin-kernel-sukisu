@@ -600,6 +600,25 @@ def patch_patch_memory(su: Path) -> None:
     print("  hook/arm64/patch_memory.c: 5.4 block-PMD fallback")
 
 
+def patch_sucompat_pgtable(su: Path) -> None:
+    path = su / "feature/sucompat.c"
+    text = read(path)
+    if "ksu54_sucompat_pgtable" in text:
+        return
+    old = "#include <linux/pgtable.h>\n"
+    new = """#include <linux/version.h>
+/* ksu54_sucompat_pgtable: <linux/pgtable.h> was split out in 5.8. */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
+#include <asm/pgtable.h>
+#else
+#include <linux/pgtable.h>
+#endif
+"""
+    text = replace_once(text, old, new, "sucompat pgtable include")
+    write(path, text)
+    print("  feature/sucompat.c: 5.4 pgtable include fallback")
+
+
 def patch_core_init(su: Path) -> None:
     path = su / "core/init.c"
     text = read(path)
@@ -956,6 +975,7 @@ def main() -> None:
     patch_sepolicy_c(su)
     patch_selinux_hide(su)
     patch_patch_memory(su)
+    patch_sucompat_pgtable(su)
     patch_core_init(su)
     patch_selinux_wrapper(su)
     patch_susfs_dispatch(su)
