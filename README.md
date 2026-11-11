@@ -61,7 +61,10 @@
    - `kernel_ref=resukisu`
    - `ksu_version=41150`（仅 tag 构建使用；main 构建会自动计算）
    - `embed_ksud=true`
-4. 构建完成后下载 `odin-SukiSU-<date>-run<N>.zip`，以及 artifact 里的 `Image` / `kernel.config`。
+   - `ksu_mode=full`：`no_susfs` 只保留 root、关闭 SUSFS；`no_ksu` 构建纯内核，用于排查
+     开机问题。
+4. 构建完成后下载 `odin-SukiSU-<mode>-<date>-run<N>.zip`，以及 artifact 里的
+   `Image` / `kernel.config`。
 
 工作流会：
 

@@ -24,6 +24,10 @@ on:
         required: false
         default: true
         type: boolean
+      ksu_mode:
+        description: 'full | no_susfs | no_ksu (diagnostic bisect for boot failures)'
+        required: false
+        default: 'full'
 
 jobs:
   build:
@@ -168,28 +172,39 @@ jobs:
           export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip READELF=llvm-readelf
 
+          MODE="${{ inputs.ksu_mode || 'full' }}"
           make -j"$(nproc)" O=out odin_defconfig
-          ./scripts/config --file out/.config \
-            --enable KPROBES --enable KSU \
-            --disable KSU_TRACEPOINT_HOOK --disable KSU_MANUAL_HOOK \
-            --enable KSU_SUSFS \
-            --enable KSU_SUSFS_ENABLE_LOG \
-            --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-            --enable KSU_SUSFS_OPEN_REDIRECT \
-            --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-            --enable KSU_SUSFS_SPOOF_UNAME \
-            --enable KSU_SUSFS_SUS_KSTAT \
-            --enable KSU_SUSFS_SUS_MAP \
-            --enable KSU_SUSFS_SUS_MOUNT \
-            --enable KSU_SUSFS_SUS_PATH
+          CFG=(--enable KPROBES --disable KSU_TRACEPOINT_HOOK --disable KSU_MANUAL_HOOK)
+          if [ "$MODE" = "no_ksu" ]; then
+            CFG+=(--disable KSU --disable KSU_SUSFS)
+          else
+            CFG+=(--enable KSU)
+            if [ "$MODE" = "full" ]; then
+              CFG+=(--enable KSU_SUSFS \
+                --enable KSU_SUSFS_ENABLE_LOG \
+                --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+                --enable KSU_SUSFS_OPEN_REDIRECT \
+                --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+                --enable KSU_SUSFS_SPOOF_UNAME \
+                --enable KSU_SUSFS_SUS_KSTAT \
+                --enable KSU_SUSFS_SUS_MAP \
+                --enable KSU_SUSFS_SUS_MOUNT \
+                --enable KSU_SUSFS_SUS_PATH)
+            else
+              CFG+=(--disable KSU_SUSFS)
+            fi
+          fi
+          ./scripts/config --file out/.config "${CFG[@]}"
           make -j"$(nproc)" O=out olddefconfig
 
           # power-tune edits out/.config, so it must run after odin_defconfig.
           bash ../ci/scripts/power-tune.sh "$PWD" || echo "::warning::power tune skipped"
 
           make -j"$(nproc)" O=out security/selinux/
-          make -j"$(nproc)" O=out drivers/kernelsu/
-          echo "=== fast gate: PASS ==="
+          if [ "$MODE" != "no_ksu" ]; then
+            make -j"$(nproc)" O=out drivers/kernelsu/
+          fi
+          echo "=== fast gate: PASS (mode=$MODE) ==="
 
       - name: Resolve SukiSU version
         id: sukisu_version
@@ -217,28 +232,37 @@ jobs:
           export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip READELF=llvm-readelf
 
+          MODE="${{ inputs.ksu_mode || 'full' }}"
           KSU_VERSION="${{ steps.sukisu_version.outputs.value }}"
           KSU_VERSION_FULL="${{ steps.sukisu_version.outputs.full }}"
-          NEKO_VER="SukiSU-$(date +%Y%m%d)-$(od -An -N2 -tu2 /dev/urandom | tr -d ' ')"
+          NEKO_VER="SukiSU-${MODE}-$(date +%Y%m%d)-$(od -An -N2 -tu2 /dev/urandom | tr -d ' ')"
           echo "NEKO_VER=$NEKO_VER" >> "$GITHUB_ENV"
           echo "KSU_VERSION=$KSU_VERSION" >> "$GITHUB_ENV"
 
           make -j"$(nproc)" O=out odin_defconfig
           ./scripts/config --file out/.config --set-str LOCALVERSION ""
           ./scripts/config --file out/.config --disable LOCALVERSION_AUTO
-          ./scripts/config --file out/.config \
-            --enable KPROBES --enable KSU \
-            --disable KSU_TRACEPOINT_HOOK --disable KSU_MANUAL_HOOK \
-            --enable KSU_SUSFS \
-            --enable KSU_SUSFS_ENABLE_LOG \
-            --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-            --enable KSU_SUSFS_OPEN_REDIRECT \
-            --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-            --enable KSU_SUSFS_SPOOF_UNAME \
-            --enable KSU_SUSFS_SUS_KSTAT \
-            --enable KSU_SUSFS_SUS_MAP \
-            --enable KSU_SUSFS_SUS_MOUNT \
-            --enable KSU_SUSFS_SUS_PATH
+          CFG=(--enable KPROBES --disable KSU_TRACEPOINT_HOOK --disable KSU_MANUAL_HOOK)
+          if [ "$MODE" = "no_ksu" ]; then
+            CFG+=(--disable KSU --disable KSU_SUSFS)
+          else
+            CFG+=(--enable KSU)
+            if [ "$MODE" = "full" ]; then
+              CFG+=(--enable KSU_SUSFS \
+                --enable KSU_SUSFS_ENABLE_LOG \
+                --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+                --enable KSU_SUSFS_OPEN_REDIRECT \
+                --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+                --enable KSU_SUSFS_SPOOF_UNAME \
+                --enable KSU_SUSFS_SUS_KSTAT \
+                --enable KSU_SUSFS_SUS_MAP \
+                --enable KSU_SUSFS_SUS_MOUNT \
+                --enable KSU_SUSFS_SUS_PATH)
+            else
+              CFG+=(--disable KSU_SUSFS)
+            fi
+          fi
+          ./scripts/config --file out/.config "${CFG[@]}"
           make -j"$(nproc)" O=out olddefconfig
 
           # SukiSU Kbuild has VERSION_BASE=40000 / OFFSET=2815; the release
@@ -248,9 +272,13 @@ jobs:
             Image Image.gz
 
           grep -E '^CONFIG_(KSU|KSU_SUSFS|KPROBES|EXT4_FS)=' out/.config || true
-          for sym in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_KPROBES; do
-            grep -qx "$sym=y" out/.config || { echo "::error::$sym=y missing"; exit 1; }
-          done
+          if [ "$MODE" != "no_ksu" ]; then
+            grep -qx 'CONFIG_KSU=y' out/.config || { echo "::error::CONFIG_KSU=y missing"; exit 1; }
+          fi
+          if [ "$MODE" = "full" ]; then
+            grep -qx 'CONFIG_KSU_SUSFS=y' out/.config || { echo "::error::CONFIG_KSU_SUSFS=y missing"; exit 1; }
+          fi
+          grep -qx 'CONFIG_KPROBES=y' out/.config || { echo "::error::CONFIG_KPROBES=y missing"; exit 1; }
 
       - name: Collect artifacts
         run: |
@@ -271,13 +299,14 @@ jobs:
       - name: Package AnyKernel3
         run: |
           set -e
+          MODE="${{ inputs.ksu_mode || 'full' }}"
           git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git ak3
           cd ak3
           rm -rf .git .github patch README.md
           mkdir -p patch
           cp ../kernel/out/arch/arm64/boot/Image .
 
-          if [ "${{ inputs.embed_ksud }}" = "true" ]; then
+          if [ "${{ inputs.embed_ksud }}" = "true" ] && [ "$MODE" != "no_ksu" ]; then
             # main has no release asset; use the newest published ksud.  A
             # main kernel reports a higher KSU_VERSION, which the tagged
             # ksud accepts, so this remains a valid combination.
@@ -320,7 +349,7 @@ jobs:
           sed -i '/^backup_file /d;/^replace_string /d;/^insert_line /d;/^append_file /d;/^patch_fstab /d' anykernel.sh
           chmod +x anykernel.sh
 
-          NAME="odin-SukiSU-$(date +%Y%m%d)-run${GITHUB_RUN_NUMBER}"
+          NAME="odin-SukiSU-${MODE}-$(date +%Y%m%d)-run${GITHUB_RUN_NUMBER}"
           zip -r9 "../${NAME}.zip" . -x '*.git*' > /dev/null
           cd ..
           ls -lh ./*.zip
@@ -339,6 +368,7 @@ jobs:
             - Kernel 5.4.302-${{ env.NEKO_VER }}, ZyC clang 14.0.6
             - Kernel source: Inkypen79/kernel_xiaomi_odin @ resukisu
             - SukiSU-Ultra: ${{ inputs.sukisu_ref || 'v4.3.0-r2' }}, KSU version ${{ env.KSU_VERSION }}
+            - Mode: ${{ inputs.ksu_mode || 'full' }} (diagnostic modes: no_susfs / no_ksu)
             - SUSFS: odin in-tree v2.1.0 (basic; SET_PRIORITY_UID_FILTER unavailable)
             - 5.4 shims: SELinux policy, sepolicy dup, selinux_hide, block-PMD
             - Package: AnyKernel3 zip (boot partition, device odin)
