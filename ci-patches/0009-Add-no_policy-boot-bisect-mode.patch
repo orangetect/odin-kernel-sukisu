@@ -1,0 +1,173 @@
+From b87f7058285180e2f8fff21733aa6f4b9e538e4e Mon Sep 17 00:00:00 2001
+From: odin builder <builder@localhost>
+Date: Wed, 11 Nov 2026 22:07:01 +0800
+Subject: [PATCH] Add no_policy boot bisect mode
+
+---
+ .github/workflows/build-sukisu.yml | 16 ++++++---
+ README.md                          |  3 +-
+ scripts/diag-no-policy.py          | 55 ++++++++++++++++++++++++++++++
+ scripts/odin-selftest.sh           |  2 ++
+ 4 files changed, 70 insertions(+), 6 deletions(-)
+ create mode 100644 scripts/diag-no-policy.py
+
+diff --git a/.github/workflows/build-sukisu.yml b/.github/workflows/build-sukisu.yml
+index 0f72e75..ff59031 100644
+--- a/.github/workflows/build-sukisu.yml
++++ b/.github/workflows/build-sukisu.yml
+@@ -25,7 +25,7 @@ on:
+         default: true
+         type: boolean
+       ksu_mode:
+-        description: 'full | no_susfs | no_ksu (diagnostic bisect for boot failures)'
++        description: 'full | no_susfs | no_ksu | no_policy (diagnostic bisect for boot failures)'
+         required: false
+         default: 'full'
+ 
+@@ -67,6 +67,11 @@ jobs:
+           chmod +x ci/scripts/sukisu-setup.py
+           python3 ci/scripts/sukisu-setup.py --kernel "$PWD/kernel"
+ 
++      - name: Apply no_policy boot bisect
++        if: ${{ inputs.ksu_mode == 'no_policy' }}
++        run: |
++          python3 ci/scripts/diag-no-policy.py --kernel "$PWD/kernel"
++
+       - name: Verify 5.4/SUSFS source markers
+         run: |
+           K=kernel/KernelSU/kernel
+@@ -88,6 +93,9 @@ jobs:
+           check 'ksu54_cpu_spoof_vdso' "$K/extension/cpu_spoof.c" 'cpu_spoof.c 5.4 clocksource guard missing'
+           check 'ksu54_filename_trans' "$K/selinux/sepolicy.c" 'sepolicy.c 5.4 filename transition fallback missing'
+           check 'ksu54_policy_unlock' "$K/selinux/rules.c" '5.4 policy status_lock unlock-before-reset missing'
++          if [ "${{ inputs.ksu_mode }}" = "no_policy" ]; then
++            check 'ksu54_diag_no_policy' "$K/runtime/ksud_integration.c" 'no_policy diagnostic marker missing'
++          fi
+           check 'ksu54_dispatch_task' "$K/supercall/dispatch.c" 'dispatch.c 5.4 tasklist includes missing'
+           check 'ksu54_susfs_sid' "$K/selinux/selinux.c" 'SUSFS SID globals used by avc.c missing'
+           check 'ksu54_path_mount' "$K/infra/su_mount_ns.c" '5.4 do_mount fallback missing'
+@@ -180,7 +188,7 @@ jobs:
+             CFG+=(--disable KSU --disable KSU_SUSFS)
+           else
+             CFG+=(--enable KSU)
+-            if [ "$MODE" = "full" ]; then
++            if [ "$MODE" = "full" ] || [ "$MODE" = "no_policy" ]; then
+               CFG+=(--enable KSU_SUSFS \
+                 --enable KSU_SUSFS_ENABLE_LOG \
+                 --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+@@ -248,7 +256,7 @@ jobs:
+             CFG+=(--disable KSU --disable KSU_SUSFS)
+           else
+             CFG+=(--enable KSU)
+-            if [ "$MODE" = "full" ]; then
++            if [ "$MODE" = "full" ] || [ "$MODE" = "no_policy" ]; then
+               CFG+=(--enable KSU_SUSFS \
+                 --enable KSU_SUSFS_ENABLE_LOG \
+                 --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+@@ -369,7 +377,7 @@ jobs:
+             - Kernel 5.4.302-${{ env.NEKO_VER }}, ZyC clang 14.0.6
+             - Kernel source: Inkypen79/kernel_xiaomi_odin @ resukisu
+             - SukiSU-Ultra: ${{ inputs.sukisu_ref || 'v4.3.0-r2' }}, KSU version ${{ env.KSU_VERSION }}
+-            - Mode: ${{ inputs.ksu_mode || 'full' }} (diagnostic modes: no_susfs / no_ksu)
++            - Mode: ${{ inputs.ksu_mode || 'full' }} (diagnostic modes: no_susfs / no_ksu / no_policy)
+             - SUSFS: odin in-tree v2.1.0 (basic; SET_PRIORITY_UID_FILTER unavailable)
+             - 5.4 shims: SELinux policy, sepolicy dup, selinux_hide, block-PMD
+             - Package: AnyKernel3 zip (boot partition, device odin)
+diff --git a/README.md b/README.md
+index 864f908..f14a728 100644
+--- a/README.md
++++ b/README.md
+@@ -62,8 +62,7 @@
+    - `kernel_ref=resukisu`
+    - `ksu_version=41150`（仅 tag 构建使用；main 构建会自动计算）
+    - `embed_ksud=true`
+-   - `ksu_mode=full`：`no_susfs` 只保留 root、关闭 SUSFS；`no_ksu` 构建纯内核，用于排查
+-     开机问题。
++   - `ksu_mode=full`：完整 KSU + SUSFS；`no_susfs` 只保留 root、关闭 SUSFS；`no_ksu` 构建纯内核；`no_policy` 保留 KSU/SUSFS 但跳过 `apply_kernelsu_rules()`，用于判断开机问题是否来自 SELinux 策略注入。
+ 4. 构建完成后下载 `odin-SukiSU-<mode>-<date>-run<N>.zip`，以及 artifact 里的
+    `Image` / `kernel.config`。
+ 
+diff --git a/scripts/diag-no-policy.py b/scripts/diag-no-policy.py
+new file mode 100644
+index 0000000..8c3c3c5
+--- /dev/null
++++ b/scripts/diag-no-policy.py
+@@ -0,0 +1,55 @@
++#!/usr/bin/env python3
++"""Diagnostic-only: skip SukiSU SELinux policy injection for boot bisect.
++
++This is intentionally not a supported root configuration.  It keeps KSU and
++SUSFS compiled in but skips the `apply_kernelsu_rules()` call made while init
++execs second_stage, so a boot failure can be attributed to the policy reload
++instead of the KSU/SUSFS core.
++"""
++
++from __future__ import annotations
++
++import argparse
++import pathlib
++import sys
++
++MARKER = "ksu54_diag_no_policy"
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--kernel", required=True, type=pathlib.Path)
++    args = ap.parse_args()
++
++    path = args.kernel / "KernelSU/kernel/runtime/ksud_integration.c"
++    if not path.is_file():
++        print(f"missing {path}", file=sys.stderr)
++        return 1
++
++    text = path.read_text(encoding="utf-8")
++    if MARKER in text:
++        print("ksud_integration.c: no_policy diagnostic already applied")
++        return 0
++
++    old = (
++        "            ksu_preinit_release();\n"
++        "            ksu_selinux_hide_handle_second_stage();\n"
++        "            apply_kernelsu_rules();\n"
++        "            cache_sid();"
++    )
++    new = (
++        "            ksu_preinit_release();\n"
++        "            /* ksu54_diag_no_policy: skip SELinux policy injection for boot bisect */\n"
++        "            cache_sid();"
++    )
++    if old not in text:
++        print("ksud_integration.c: init second_stage block not found (upstream changed?)", file=sys.stderr)
++        return 1
++
++    path.write_text(text.replace(old, new, 1), encoding="utf-8", newline="\n")
++    print("ksud_integration.c: skipped apply_kernelsu_rules() for no_policy diagnostic")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/scripts/odin-selftest.sh b/scripts/odin-selftest.sh
+index b53da22..e159625 100755
+--- a/scripts/odin-selftest.sh
++++ b/scripts/odin-selftest.sh
+@@ -13,6 +13,7 @@ echo "== repository files =="
+ have README.md
+ have .github/workflows/build-sukisu.yml
+ have scripts/sukisu-setup.py
++have scripts/diag-no-policy.py
+ have scripts/ksu54-compat.h
+ have scripts/ak3-ksud.sh
+ have scripts/sched-tune.sh
+@@ -21,6 +22,7 @@ have scripts/sched-patches
+ 
+ echo "== python syntax =="
+ python3 -m py_compile "$ROOT/scripts/sukisu-setup.py" && ok "sukisu-setup.py" || bad "sukisu-setup.py syntax"
++python3 -m py_compile "$ROOT/scripts/diag-no-policy.py" && ok "diag-no-policy.py" || bad "diag-no-policy.py syntax"
+ 
+ echo "== YAML syntax =="
+ python3 - "$ROOT/.github/workflows/build-sukisu.yml" <<'PY' && ok "build-sukisu.yml" || bad "build-sukisu.yml"
+-- 
+2.54.0.windows.1
+

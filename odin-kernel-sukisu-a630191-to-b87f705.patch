@@ -1,0 +1,354 @@
+diff --git a/.github/workflows/build-sukisu.yml b/.github/workflows/build-sukisu.yml
+index 00c7f49..ff59031 100644
+--- a/.github/workflows/build-sukisu.yml
++++ b/.github/workflows/build-sukisu.yml
+@@ -24,6 +24,10 @@ on:
+         required: false
+         default: true
+         type: boolean
++      ksu_mode:
++        description: 'full | no_susfs | no_ksu | no_policy (diagnostic bisect for boot failures)'
++        required: false
++        default: 'full'
+ 
+ jobs:
+   build:
+@@ -63,6 +67,11 @@ jobs:
+           chmod +x ci/scripts/sukisu-setup.py
+           python3 ci/scripts/sukisu-setup.py --kernel "$PWD/kernel"
+ 
++      - name: Apply no_policy boot bisect
++        if: ${{ inputs.ksu_mode == 'no_policy' }}
++        run: |
++          python3 ci/scripts/diag-no-policy.py --kernel "$PWD/kernel"
++
+       - name: Verify 5.4/SUSFS source markers
+         run: |
+           K=kernel/KernelSU/kernel
+@@ -83,6 +92,10 @@ jobs:
+           check 'ksu54_allowlist_task' "$K/policy/allowlist.c" 'allowlist.c 5.4 sched/task.h include missing'
+           check 'ksu54_cpu_spoof_vdso' "$K/extension/cpu_spoof.c" 'cpu_spoof.c 5.4 clocksource guard missing'
+           check 'ksu54_filename_trans' "$K/selinux/sepolicy.c" 'sepolicy.c 5.4 filename transition fallback missing'
++          check 'ksu54_policy_unlock' "$K/selinux/rules.c" '5.4 policy status_lock unlock-before-reset missing'
++          if [ "${{ inputs.ksu_mode }}" = "no_policy" ]; then
++            check 'ksu54_diag_no_policy' "$K/runtime/ksud_integration.c" 'no_policy diagnostic marker missing'
++          fi
+           check 'ksu54_dispatch_task' "$K/supercall/dispatch.c" 'dispatch.c 5.4 tasklist includes missing'
+           check 'ksu54_susfs_sid' "$K/selinux/selinux.c" 'SUSFS SID globals used by avc.c missing'
+           check 'ksu54_path_mount' "$K/infra/su_mount_ns.c" '5.4 do_mount fallback missing'
+@@ -168,28 +181,39 @@ jobs:
+           export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
+           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip READELF=llvm-readelf
+ 
++          MODE="${{ inputs.ksu_mode || 'full' }}"
+           make -j"$(nproc)" O=out odin_defconfig
+-          ./scripts/config --file out/.config \
+-            --enable KPROBES --enable KSU \
+-            --disable KSU_TRACEPOINT_HOOK --disable KSU_MANUAL_HOOK \
+-            --enable KSU_SUSFS \
+-            --enable KSU_SUSFS_ENABLE_LOG \
+-            --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+-            --enable KSU_SUSFS_OPEN_REDIRECT \
+-            --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+-            --enable KSU_SUSFS_SPOOF_UNAME \
+-            --enable KSU_SUSFS_SUS_KSTAT \
+-            --enable KSU_SUSFS_SUS_MAP \
+-            --enable KSU_SUSFS_SUS_MOUNT \
+-            --enable KSU_SUSFS_SUS_PATH
++          CFG=(--enable KPROBES --disable KSU_TRACEPOINT_HOOK --disable KSU_MANUAL_HOOK)
++          if [ "$MODE" = "no_ksu" ]; then
++            CFG+=(--disable KSU --disable KSU_SUSFS)
++          else
++            CFG+=(--enable KSU)
++            if [ "$MODE" = "full" ] || [ "$MODE" = "no_policy" ]; then
++              CFG+=(--enable KSU_SUSFS \
++                --enable KSU_SUSFS_ENABLE_LOG \
++                --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
++                --enable KSU_SUSFS_OPEN_REDIRECT \
++                --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
++                --enable KSU_SUSFS_SPOOF_UNAME \
++                --enable KSU_SUSFS_SUS_KSTAT \
++                --enable KSU_SUSFS_SUS_MAP \
++                --enable KSU_SUSFS_SUS_MOUNT \
++                --enable KSU_SUSFS_SUS_PATH)
++            else
++              CFG+=(--disable KSU_SUSFS)
++            fi
++          fi
++          ./scripts/config --file out/.config "${CFG[@]}"
+           make -j"$(nproc)" O=out olddefconfig
+ 
+           # power-tune edits out/.config, so it must run after odin_defconfig.
+           bash ../ci/scripts/power-tune.sh "$PWD" || echo "::warning::power tune skipped"
+ 
+           make -j"$(nproc)" O=out security/selinux/
+-          make -j"$(nproc)" O=out drivers/kernelsu/
+-          echo "=== fast gate: PASS ==="
++          if [ "$MODE" != "no_ksu" ]; then
++            make -j"$(nproc)" O=out drivers/kernelsu/
++          fi
++          echo "=== fast gate: PASS (mode=$MODE) ==="
+ 
+       - name: Resolve SukiSU version
+         id: sukisu_version
+@@ -217,28 +241,37 @@ jobs:
+           export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
+           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip READELF=llvm-readelf
+ 
++          MODE="${{ inputs.ksu_mode || 'full' }}"
+           KSU_VERSION="${{ steps.sukisu_version.outputs.value }}"
+           KSU_VERSION_FULL="${{ steps.sukisu_version.outputs.full }}"
+-          NEKO_VER="SukiSU-$(date +%Y%m%d)-$(od -An -N2 -tu2 /dev/urandom | tr -d ' ')"
++          NEKO_VER="SukiSU-${MODE}-$(date +%Y%m%d)-$(od -An -N2 -tu2 /dev/urandom | tr -d ' ')"
+           echo "NEKO_VER=$NEKO_VER" >> "$GITHUB_ENV"
+           echo "KSU_VERSION=$KSU_VERSION" >> "$GITHUB_ENV"
+ 
+           make -j"$(nproc)" O=out odin_defconfig
+           ./scripts/config --file out/.config --set-str LOCALVERSION ""
+           ./scripts/config --file out/.config --disable LOCALVERSION_AUTO
+-          ./scripts/config --file out/.config \
+-            --enable KPROBES --enable KSU \
+-            --disable KSU_TRACEPOINT_HOOK --disable KSU_MANUAL_HOOK \
+-            --enable KSU_SUSFS \
+-            --enable KSU_SUSFS_ENABLE_LOG \
+-            --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+-            --enable KSU_SUSFS_OPEN_REDIRECT \
+-            --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+-            --enable KSU_SUSFS_SPOOF_UNAME \
+-            --enable KSU_SUSFS_SUS_KSTAT \
+-            --enable KSU_SUSFS_SUS_MAP \
+-            --enable KSU_SUSFS_SUS_MOUNT \
+-            --enable KSU_SUSFS_SUS_PATH
++          CFG=(--enable KPROBES --disable KSU_TRACEPOINT_HOOK --disable KSU_MANUAL_HOOK)
++          if [ "$MODE" = "no_ksu" ]; then
++            CFG+=(--disable KSU --disable KSU_SUSFS)
++          else
++            CFG+=(--enable KSU)
++            if [ "$MODE" = "full" ] || [ "$MODE" = "no_policy" ]; then
++              CFG+=(--enable KSU_SUSFS \
++                --enable KSU_SUSFS_ENABLE_LOG \
++                --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
++                --enable KSU_SUSFS_OPEN_REDIRECT \
++                --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
++                --enable KSU_SUSFS_SPOOF_UNAME \
++                --enable KSU_SUSFS_SUS_KSTAT \
++                --enable KSU_SUSFS_SUS_MAP \
++                --enable KSU_SUSFS_SUS_MOUNT \
++                --enable KSU_SUSFS_SUS_PATH)
++            else
++              CFG+=(--disable KSU_SUSFS)
++            fi
++          fi
++          ./scripts/config --file out/.config "${CFG[@]}"
+           make -j"$(nproc)" O=out olddefconfig
+ 
+           # SukiSU Kbuild has VERSION_BASE=40000 / OFFSET=2815; the release
+@@ -248,9 +281,13 @@ jobs:
+             Image Image.gz
+ 
+           grep -E '^CONFIG_(KSU|KSU_SUSFS|KPROBES|EXT4_FS)=' out/.config || true
+-          for sym in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_KPROBES; do
+-            grep -qx "$sym=y" out/.config || { echo "::error::$sym=y missing"; exit 1; }
+-          done
++          if [ "$MODE" != "no_ksu" ]; then
++            grep -qx 'CONFIG_KSU=y' out/.config || { echo "::error::CONFIG_KSU=y missing"; exit 1; }
++          fi
++          if [ "$MODE" = "full" ]; then
++            grep -qx 'CONFIG_KSU_SUSFS=y' out/.config || { echo "::error::CONFIG_KSU_SUSFS=y missing"; exit 1; }
++          fi
++          grep -qx 'CONFIG_KPROBES=y' out/.config || { echo "::error::CONFIG_KPROBES=y missing"; exit 1; }
+ 
+       - name: Collect artifacts
+         run: |
+@@ -271,13 +308,14 @@ jobs:
+       - name: Package AnyKernel3
+         run: |
+           set -e
++          MODE="${{ inputs.ksu_mode || 'full' }}"
+           git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git ak3
+           cd ak3
+           rm -rf .git .github patch README.md
+           mkdir -p patch
+           cp ../kernel/out/arch/arm64/boot/Image .
+ 
+-          if [ "${{ inputs.embed_ksud }}" = "true" ]; then
++          if [ "${{ inputs.embed_ksud }}" = "true" ] && [ "$MODE" != "no_ksu" ]; then
+             # main has no release asset; use the newest published ksud.  A
+             # main kernel reports a higher KSU_VERSION, which the tagged
+             # ksud accepts, so this remains a valid combination.
+@@ -320,7 +358,7 @@ jobs:
+           sed -i '/^backup_file /d;/^replace_string /d;/^insert_line /d;/^append_file /d;/^patch_fstab /d' anykernel.sh
+           chmod +x anykernel.sh
+ 
+-          NAME="odin-SukiSU-$(date +%Y%m%d)-run${GITHUB_RUN_NUMBER}"
++          NAME="odin-SukiSU-${MODE}-$(date +%Y%m%d)-run${GITHUB_RUN_NUMBER}"
+           zip -r9 "../${NAME}.zip" . -x '*.git*' > /dev/null
+           cd ..
+           ls -lh ./*.zip
+@@ -339,6 +377,7 @@ jobs:
+             - Kernel 5.4.302-${{ env.NEKO_VER }}, ZyC clang 14.0.6
+             - Kernel source: Inkypen79/kernel_xiaomi_odin @ resukisu
+             - SukiSU-Ultra: ${{ inputs.sukisu_ref || 'v4.3.0-r2' }}, KSU version ${{ env.KSU_VERSION }}
++            - Mode: ${{ inputs.ksu_mode || 'full' }} (diagnostic modes: no_susfs / no_ksu / no_policy)
+             - SUSFS: odin in-tree v2.1.0 (basic; SET_PRIORITY_UID_FILTER unavailable)
+             - 5.4 shims: SELinux policy, sepolicy dup, selinux_hide, block-PMD
+             - Package: AnyKernel3 zip (boot partition, device odin)
+diff --git a/README.md b/README.md
+index fe0cc61..f14a728 100644
+--- a/README.md
++++ b/README.md
+@@ -46,6 +46,7 @@
+   - `put_task_struct()` 的 `sched/task.h` 头文件、`clocksource.vdso_clock_mode` 的 5.4 保护；
+   - `sepolicy` 的 5.4 filename transition 回退（5.4 没有 `filename_trans_key` 链表）；
+   - `supercall/dispatch` 的 5.4 `tasklist_lock` / `init_task` 头文件补齐；
++- `selinux/rules.c` 在 5.4 上先释放 `ss->status_lock` 再调用 `reset_avc_cache()`，避免 `selinux_status_update_policyload()` 重复加锁导致 init second_stage 死锁/关机；
+ - `avc.c` 引用的 `susfs_ksu_sid` / `susfs_priv_app_sid` 在 `selinux/selinux.c` 中定义并缓存；
+ - `su_mount_ns` 用 5.4 的 `do_mount()` + `d_path()` 替代 5.9+ 的 `path_mount()`；
+   - 删除 odin 树里旧 ReSukiSU 的 `ksu_handle_execveat/faccessat/stat/...` 调用点。
+@@ -61,7 +62,9 @@
+    - `kernel_ref=resukisu`
+    - `ksu_version=41150`（仅 tag 构建使用；main 构建会自动计算）
+    - `embed_ksud=true`
+-4. 构建完成后下载 `odin-SukiSU-<date>-run<N>.zip`，以及 artifact 里的 `Image` / `kernel.config`。
++   - `ksu_mode=full`：完整 KSU + SUSFS；`no_susfs` 只保留 root、关闭 SUSFS；`no_ksu` 构建纯内核；`no_policy` 保留 KSU/SUSFS 但跳过 `apply_kernelsu_rules()`，用于判断开机问题是否来自 SELinux 策略注入。
++4. 构建完成后下载 `odin-SukiSU-<mode>-<date>-run<N>.zip`，以及 artifact 里的
++   `Image` / `kernel.config`。
+ 
+ 工作流会：
+ 
+diff --git a/scripts/diag-no-policy.py b/scripts/diag-no-policy.py
+new file mode 100644
+index 0000000..8c3c3c5
+--- /dev/null
++++ b/scripts/diag-no-policy.py
+@@ -0,0 +1,55 @@
++#!/usr/bin/env python3
++"""Diagnostic-only: skip SukiSU SELinux policy injection for boot bisect.
++
++This is intentionally not a supported root configuration.  It keeps KSU and
++SUSFS compiled in but skips the `apply_kernelsu_rules()` call made while init
++execs second_stage, so a boot failure can be attributed to the policy reload
++instead of the KSU/SUSFS core.
++"""
++
++from __future__ import annotations
++
++import argparse
++import pathlib
++import sys
++
++MARKER = "ksu54_diag_no_policy"
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--kernel", required=True, type=pathlib.Path)
++    args = ap.parse_args()
++
++    path = args.kernel / "KernelSU/kernel/runtime/ksud_integration.c"
++    if not path.is_file():
++        print(f"missing {path}", file=sys.stderr)
++        return 1
++
++    text = path.read_text(encoding="utf-8")
++    if MARKER in text:
++        print("ksud_integration.c: no_policy diagnostic already applied")
++        return 0
++
++    old = (
++        "            ksu_preinit_release();\n"
++        "            ksu_selinux_hide_handle_second_stage();\n"
++        "            apply_kernelsu_rules();\n"
++        "            cache_sid();"
++    )
++    new = (
++        "            ksu_preinit_release();\n"
++        "            /* ksu54_diag_no_policy: skip SELinux policy injection for boot bisect */\n"
++        "            cache_sid();"
++    )
++    if old not in text:
++        print("ksud_integration.c: init second_stage block not found (upstream changed?)", file=sys.stderr)
++        return 1
++
++    path.write_text(text.replace(old, new, 1), encoding="utf-8", newline="\n")
++    print("ksud_integration.c: skipped apply_kernelsu_rules() for no_policy diagnostic")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/scripts/odin-selftest.sh b/scripts/odin-selftest.sh
+index dc9c132..e159625 100755
+--- a/scripts/odin-selftest.sh
++++ b/scripts/odin-selftest.sh
+@@ -13,6 +13,7 @@ echo "== repository files =="
+ have README.md
+ have .github/workflows/build-sukisu.yml
+ have scripts/sukisu-setup.py
++have scripts/diag-no-policy.py
+ have scripts/ksu54-compat.h
+ have scripts/ak3-ksud.sh
+ have scripts/sched-tune.sh
+@@ -21,6 +22,7 @@ have scripts/sched-patches
+ 
+ echo "== python syntax =="
+ python3 -m py_compile "$ROOT/scripts/sukisu-setup.py" && ok "sukisu-setup.py" || bad "sukisu-setup.py syntax"
++python3 -m py_compile "$ROOT/scripts/diag-no-policy.py" && ok "diag-no-policy.py" || bad "diag-no-policy.py syntax"
+ 
+ echo "== YAML syntax =="
+ python3 - "$ROOT/.github/workflows/build-sukisu.yml" <<'PY' && ok "build-sukisu.yml" || bad "build-sukisu.yml"
+@@ -35,7 +37,7 @@ for marker in KSU54_SELINUX_POLICY_SHIM KSU54_POLICY_FIELD ksu54_sepolicy_backpo
+               ksu54_allowlist_task ksu54_cpu_spoof_vdso \
+               ksu54_filename_trans ksu54_dispatch_task \
+               ksu54_susfs_sid ksu54_path_mount \
+-              ksu54_header_shim susfs_is_current_ksu_domain \
++              ksu54_header_shim ksu54_policy_unlock susfs_is_current_ksu_domain \
+               ksu_handle_susfs_command susfs_start_sdcard_monitor_fn \
+               susfs_set_current_proc_umounted 'config KSU_SUSFS'; do
+   grepf "$marker" scripts/sukisu-setup.py "setup emits $marker"
+diff --git a/scripts/sukisu-setup.py b/scripts/sukisu-setup.py
+index 7db4296..b8afe0a 100755
+--- a/scripts/sukisu-setup.py
++++ b/scripts/sukisu-setup.py
+@@ -403,6 +403,41 @@ static struct selinux_policy *ksu54_current_policy(void)
+ 
+     # 5.4 has no selinux_state.policy; keep the generation stable.
+     text = text.replace("reset_avc_cache(pol->latest_granting);", "reset_avc_cache(0);")
++
++    # On 5.4 KSU_POLICY_LOCK() is selinux_state.ss->status_lock.  The real
++    # selinux_status_update_policyload() also takes that same non-recursive
++    # mutex, so calling reset_avc_cache() before KSU_POLICY_UNLOCK() deadlocks
++    # at "init second_stage" (the device appears to power off).  Unlock first
++    # on <5.7; the 6.x path keeps the original lock ordering.
++    text = text.replace(
++        "    reset_avc_cache(0);\n"
++        "out_unlock:\n"
++        "    KSU_POLICY_UNLOCK();",
++        "/* ksu54_policy_unlock: status_lock is not recursive */\n"
++        "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)\n"
++        "    KSU_POLICY_UNLOCK();\n"
++        "    reset_avc_cache(0);\n"
++        "    return;\n"
++        "#endif\n"
++        "    reset_avc_cache(0);\n"
++        "out_unlock:\n"
++        "    KSU_POLICY_UNLOCK();",
++    )
++    text = text.replace(
++        "    reset_avc_cache(0);\n"
++        "    ret = success_cmd_count;\n"
++        "    goto out_unlock;",
++        "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)\n"
++        "    KSU_POLICY_UNLOCK();\n"
++        "    reset_avc_cache(0);\n"
++        "    ret = success_cmd_count;\n"
++        "    goto out_free;\n"
++        "#else\n"
++        "    reset_avc_cache(0);\n"
++        "    ret = success_cmd_count;\n"
++        "    goto out_unlock;\n"
++        "#endif",
++    )
+     write(path, text)
+     print("  selinux/rules.c: 5.4 policy accessors applied")
+ 

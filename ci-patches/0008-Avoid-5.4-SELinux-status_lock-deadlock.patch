@@ -1,0 +1,99 @@
+From c6c5185a8d8d4aa9dce43bb02fd4e60a91d8cb14 Mon Sep 17 00:00:00 2001
+From: odin builder <builder@localhost>
+Date: Wed, 11 Nov 2026 21:59:02 +0800
+Subject: [PATCH 1/1] Avoid 5.4 SELinux status_lock deadlock during policy
+ reload
+
+---
+ .github/workflows/build-sukisu.yml |  1 +
+ README.md                          |  1 +
+ scripts/odin-selftest.sh           |  2 +-
+ scripts/sukisu-setup.py            | 35 ++++++++++++++++++++++++++++++
+ 4 files changed, 38 insertions(+), 1 deletion(-)
+
+diff --git a/.github/workflows/build-sukisu.yml b/.github/workflows/build-sukisu.yml
+index f0ce3ff..0f72e75 100644
+--- a/.github/workflows/build-sukisu.yml
++++ b/.github/workflows/build-sukisu.yml
+@@ -87,6 +87,7 @@ jobs:
+           check 'ksu54_allowlist_task' "$K/policy/allowlist.c" 'allowlist.c 5.4 sched/task.h include missing'
+           check 'ksu54_cpu_spoof_vdso' "$K/extension/cpu_spoof.c" 'cpu_spoof.c 5.4 clocksource guard missing'
+           check 'ksu54_filename_trans' "$K/selinux/sepolicy.c" 'sepolicy.c 5.4 filename transition fallback missing'
++          check 'ksu54_policy_unlock' "$K/selinux/rules.c" '5.4 policy status_lock unlock-before-reset missing'
+           check 'ksu54_dispatch_task' "$K/supercall/dispatch.c" 'dispatch.c 5.4 tasklist includes missing'
+           check 'ksu54_susfs_sid' "$K/selinux/selinux.c" 'SUSFS SID globals used by avc.c missing'
+           check 'ksu54_path_mount' "$K/infra/su_mount_ns.c" '5.4 do_mount fallback missing'
+diff --git a/README.md b/README.md
+index 0a91800..864f908 100644
+--- a/README.md
++++ b/README.md
+@@ -46,6 +46,7 @@
+   - `put_task_struct()` 的 `sched/task.h` 头文件、`clocksource.vdso_clock_mode` 的 5.4 保护；
+   - `sepolicy` 的 5.4 filename transition 回退（5.4 没有 `filename_trans_key` 链表）；
+   - `supercall/dispatch` 的 5.4 `tasklist_lock` / `init_task` 头文件补齐；
++- `selinux/rules.c` 在 5.4 上先释放 `ss->status_lock` 再调用 `reset_avc_cache()`，避免 `selinux_status_update_policyload()` 重复加锁导致 init second_stage 死锁/关机；
+ - `avc.c` 引用的 `susfs_ksu_sid` / `susfs_priv_app_sid` 在 `selinux/selinux.c` 中定义并缓存；
+ - `su_mount_ns` 用 5.4 的 `do_mount()` + `d_path()` 替代 5.9+ 的 `path_mount()`；
+   - 删除 odin 树里旧 ReSukiSU 的 `ksu_handle_execveat/faccessat/stat/...` 调用点。
+diff --git a/scripts/odin-selftest.sh b/scripts/odin-selftest.sh
+index dc9c132..b53da22 100755
+--- a/scripts/odin-selftest.sh
++++ b/scripts/odin-selftest.sh
+@@ -35,7 +35,7 @@ for marker in KSU54_SELINUX_POLICY_SHIM KSU54_POLICY_FIELD ksu54_sepolicy_backpo
+               ksu54_allowlist_task ksu54_cpu_spoof_vdso \
+               ksu54_filename_trans ksu54_dispatch_task \
+               ksu54_susfs_sid ksu54_path_mount \
+-              ksu54_header_shim susfs_is_current_ksu_domain \
++              ksu54_header_shim ksu54_policy_unlock susfs_is_current_ksu_domain \
+               ksu_handle_susfs_command susfs_start_sdcard_monitor_fn \
+               susfs_set_current_proc_umounted 'config KSU_SUSFS'; do
+   grepf "$marker" scripts/sukisu-setup.py "setup emits $marker"
+diff --git a/scripts/sukisu-setup.py b/scripts/sukisu-setup.py
+index 7db4296..b8afe0a 100755
+--- a/scripts/sukisu-setup.py
++++ b/scripts/sukisu-setup.py
+@@ -403,6 +403,41 @@ static struct selinux_policy *ksu54_current_policy(void)
+ 
+     # 5.4 has no selinux_state.policy; keep the generation stable.
+     text = text.replace("reset_avc_cache(pol->latest_granting);", "reset_avc_cache(0);")
++
++    # On 5.4 KSU_POLICY_LOCK() is selinux_state.ss->status_lock.  The real
++    # selinux_status_update_policyload() also takes that same non-recursive
++    # mutex, so calling reset_avc_cache() before KSU_POLICY_UNLOCK() deadlocks
++    # at "init second_stage" (the device appears to power off).  Unlock first
++    # on <5.7; the 6.x path keeps the original lock ordering.
++    text = text.replace(
++        "    reset_avc_cache(0);\n"
++        "out_unlock:\n"
++        "    KSU_POLICY_UNLOCK();",
++        "/* ksu54_policy_unlock: status_lock is not recursive */\n"
++        "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)\n"
++        "    KSU_POLICY_UNLOCK();\n"
++        "    reset_avc_cache(0);\n"
++        "    return;\n"
++        "#endif\n"
++        "    reset_avc_cache(0);\n"
++        "out_unlock:\n"
++        "    KSU_POLICY_UNLOCK();",
++    )
++    text = text.replace(
++        "    reset_avc_cache(0);\n"
++        "    ret = success_cmd_count;\n"
++        "    goto out_unlock;",
++        "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)\n"
++        "    KSU_POLICY_UNLOCK();\n"
++        "    reset_avc_cache(0);\n"
++        "    ret = success_cmd_count;\n"
++        "    goto out_free;\n"
++        "#else\n"
++        "    reset_avc_cache(0);\n"
++        "    ret = success_cmd_count;\n"
++        "    goto out_unlock;\n"
++        "#endif",
++    )
+     write(path, text)
+     print("  selinux/rules.c: 5.4 policy accessors applied")
+ 
+-- 
+2.54.0.windows.1
+
