@@ -31,6 +31,7 @@ PY
 echo "== setup script markers =="
 for marker in KSU54_SELINUX_POLICY_SHIM KSU54_POLICY_FIELD ksu54_sepolicy_backport \
               ksu54_selinux_hide_54 ksu54_pmd_sect ksu54_sucompat_pgtable \
+              ksu54_pkg_observer_fsnotify \
               ksu54_header_shim susfs_is_current_ksu_domain \
               ksu_handle_susfs_command susfs_start_sdcard_monitor_fn \
               susfs_set_current_proc_umounted 'config KSU_SUSFS'; do

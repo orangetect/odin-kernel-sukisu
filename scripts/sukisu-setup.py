@@ -644,6 +644,62 @@ def patch_sucompat_pgtable(su: Path) -> None:
     print("  feature/sucompat.c: 5.4 pgtable include fallback")
 
 
+def patch_pkg_observer_fsnotify(su: Path) -> None:
+    """Port fsnotify_ops.handle_inode_event to 5.4's handle_event."""
+    path = su / "manager/pkg_observer.c"
+    text = read(path)
+    if "ksu54_pkg_observer_fsnotify" in text:
+        return
+
+    anchor = "static const struct fsnotify_ops ksu_ops = {"
+    if anchor not in text:
+        fail("anchor not found (pkg_observer fsnotify_ops); SukiSU source changed?")
+
+    init = "    .handle_inode_event = ksu_handle_inode_event,\n"
+    if init not in text:
+        if ".handle_event" in text:
+            text = replace_once(
+                text,
+                anchor,
+                "/* ksu54_pkg_observer_fsnotify: upstream already uses handle_event. */\n" + anchor,
+                "pkg_observer already uses handle_event",
+            )
+            write(path, text)
+            print("  manager/pkg_observer.c: upstream handle_event API, marker only")
+            return
+        fail("pkg_observer fsnotify initializer not found")
+
+    wrapper = (
+        "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)\n"
+        "/* ksu54_pkg_observer_fsnotify: 5.4 fsnotify_ops has handle_event,\n"
+        " * not handle_inode_event.  data/data_type/iter_info are not needed by\n"
+        " * the package observer, which only reads file_name and mask. */\n"
+        "static int ksu_handle_event(struct fsnotify_group *group, struct inode *inode,\n"
+        "                            u32 mask, const void *data, int data_type,\n"
+        "                            const struct qstr *file_name, u32 cookie,\n"
+        "                            struct fsnotify_iter_info *iter_info)\n"
+        "{\n"
+        "    (void)group;\n"
+        "    (void)data;\n"
+        "    (void)data_type;\n"
+        "    (void)iter_info;\n"
+        "    return ksu_handle_inode_event(NULL, mask, inode, NULL, file_name, cookie);\n"
+        "}\n"
+        "#endif\n\n"
+    )
+    text = replace_once(text, anchor, wrapper + anchor, "pkg_observer fsnotify_ops")
+    replacement = (
+        "#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)\n"
+        "    .handle_inode_event = ksu_handle_inode_event,\n"
+        "#else\n"
+        "    .handle_event = ksu_handle_event,\n"
+        "#endif\n"
+    )
+    text = replace_once(text, init, replacement, "pkg_observer fsnotify initializer")
+    write(path, text)
+    print("  manager/pkg_observer.c: 5.4 fsnotify handle_event wrapper")
+
+
 def patch_core_init(su: Path) -> None:
     path = su / "core/init.c"
     text = read(path)
@@ -1002,6 +1058,7 @@ def main() -> None:
     patch_selinux_hide(su)
     patch_patch_memory(su)
     patch_sucompat_pgtable(su)
+    patch_pkg_observer_fsnotify(su)
     patch_core_init(su)
     patch_selinux_wrapper(su)
     patch_susfs_dispatch(su)
