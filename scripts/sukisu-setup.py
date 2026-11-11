@@ -873,6 +873,111 @@ bool susfs_is_current_ksu_domain(void)
     print("  selinux/selinux.c: susfs_is_current_ksu_domain() wrapper")
 
 
+def patch_susfs_sid_globals(su: Path) -> None:
+    """Provide the SIDs avc_audit_post_callback() expects.
+
+    odin's avc.c was patched for SUSFS and references susfs_ksu_sid /
+    susfs_priv_app_sid, but those globals lived in the removed KernelSU
+    submodule.  SukiSU already caches the ksu SID; publish it under the
+    names avc.c uses and cache priv_app too.
+    """
+    path = su / "selinux/selinux.c"
+    text = read(path)
+    if "susfs_priv_app_sid" in text:
+        return
+
+    anchor = "u32 ksu_file_sid __read_mostly = 0;\n"
+    globals_block = anchor + r"""
+#ifdef CONFIG_KSU_SUSFS
+#ifndef PRIV_APP_CONTEXT
+#define PRIV_APP_CONTEXT "u:r:priv_app:s0:c512,c768"
+#endif
+u32 susfs_ksu_sid __read_mostly = 0;
+u32 susfs_priv_app_sid __read_mostly = 0;
+#endif
+"""
+    text = replace_once(text, anchor, globals_block, "selinux.c SUSFS sid globals")
+
+    anchor = "    err = security_secctx_to_secid(ZYGOTE_CONTEXT"
+    sid_block = r"""#ifdef CONFIG_KSU_SUSFS
+	/* ksu54_susfs_sid: SIDs compared by avc_audit_post_callback(). */
+	susfs_ksu_sid = cached_su_sid;
+	if (security_secctx_to_secid(PRIV_APP_CONTEXT, strlen(PRIV_APP_CONTEXT),
+				     &susfs_priv_app_sid))
+		susfs_priv_app_sid = 0;
+#endif
+
+""" + anchor
+    text = replace_once(text, anchor, sid_block, "selinux.c SUSFS sid cache")
+    write(path, text)
+    print("  selinux/selinux.c: SUSFS sid globals + cache")
+
+
+def patch_su_mount_ns(su: Path) -> None:
+    """5.4 has do_mount(), not the 5.9+ path_mount() helper."""
+    path = su / "infra/su_mount_ns.c"
+    text = read(path)
+    if "ksu54_path_mount" in text:
+        return
+
+    old = (
+        "extern int path_mount(const char *dev_name, struct path *path, "
+        "const char *type_page, unsigned long flags,\n"
+        "                      void *data_page);\n"
+    )
+    new = r"""#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
+extern int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags,
+                      void *data_page);
+#else
+#include <linux/uaccess.h>
+
+/* ksu54_path_mount: 5.4 only has do_mount(), which takes a user path.
+ * d_path() gives us the mountpoint string, and KERNEL_DS lets getname()
+ * accept it without copying through userspace. */
+static int ksu54_path_mount(const char *dev_name, struct path *path, const char *type_page,
+			    unsigned long flags, void *data_page)
+{
+	char *buf;
+	char *p;
+	mm_segment_t old_fs;
+	int ret;
+
+	buf = kmalloc(PATH_MAX, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	p = d_path(path, buf, PATH_MAX);
+	if (IS_ERR(p)) {
+		ret = PTR_ERR(p);
+		goto out;
+	}
+
+	old_fs = get_fs();
+	set_fs(KERNEL_DS);
+	ret = do_mount(dev_name, (const char __user *)p, type_page, flags, data_page);
+	set_fs(old_fs);
+
+out:
+	kfree(buf);
+	return ret;
+}
+#endif
+"""
+    text = replace_once(text, old, new, "su_mount_ns path_mount compat")
+
+    old_call = "    int pm_ret = path_mount(NULL, &root_path, NULL, MS_PRIVATE | MS_REC, NULL);"
+    new_call = (
+        "#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)\n"
+        "    int pm_ret = path_mount(NULL, &root_path, NULL, MS_PRIVATE | MS_REC, NULL);\n"
+        "#else\n"
+        "    int pm_ret = ksu54_path_mount(NULL, &root_path, NULL, MS_PRIVATE | MS_REC, NULL);\n"
+        "#endif"
+    )
+    text = replace_once(text, old_call, new_call, "su_mount_ns path_mount call")
+    write(path, text)
+    print("  infra/su_mount_ns.c: 5.4 do_mount fallback")
+
+
 def patch_susfs_dispatch(su: Path) -> None:
     """Wire the in-tree SUSFS v2.1.0 command ABI into SukiSU.
 
@@ -1192,6 +1297,8 @@ def main() -> None:
     patch_dispatch_task(su)
     patch_core_init(su)
     patch_selinux_wrapper(su)
+    patch_susfs_sid_globals(su)
+    patch_su_mount_ns(su)
     patch_susfs_dispatch(su)
     patch_susfs_reboot_hook(su)
     patch_susfs_sdcard_monitor(su)

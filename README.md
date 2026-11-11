@@ -46,6 +46,8 @@
   - `put_task_struct()` 的 `sched/task.h` 头文件、`clocksource.vdso_clock_mode` 的 5.4 保护；
   - `sepolicy` 的 5.4 filename transition 回退（5.4 没有 `filename_trans_key` 链表）；
   - `supercall/dispatch` 的 5.4 `tasklist_lock` / `init_task` 头文件补齐；
+- `avc.c` 引用的 `susfs_ksu_sid` / `susfs_priv_app_sid` 在 `selinux/selinux.c` 中定义并缓存；
+- `su_mount_ns` 用 5.4 的 `do_mount()` + `d_path()` 替代 5.9+ 的 `path_mount()`；
   - 删除 odin 树里旧 ReSukiSU 的 `ksu_handle_execveat/faccessat/stat/...` 调用点。
 - 输入 boost 关闭、io-is-busy 关闭、schedutil 使用 PELT 的调度补丁（沿用 FinaSU 仓库）。
 - AnyKernel3 包内内置与 v4.3.0-r2 匹配的 `ksud-aarch64-linux-android`。
