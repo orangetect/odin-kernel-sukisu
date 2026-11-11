@@ -13,6 +13,7 @@ echo "== repository files =="
 have README.md
 have .github/workflows/build-sukisu.yml
 have scripts/sukisu-setup.py
+have scripts/diag-no-policy.py
 have scripts/ksu54-compat.h
 have scripts/ak3-ksud.sh
 have scripts/sched-tune.sh
@@ -21,6 +22,7 @@ have scripts/sched-patches
 
 echo "== python syntax =="
 python3 -m py_compile "$ROOT/scripts/sukisu-setup.py" && ok "sukisu-setup.py" || bad "sukisu-setup.py syntax"
+python3 -m py_compile "$ROOT/scripts/diag-no-policy.py" && ok "diag-no-policy.py" || bad "diag-no-policy.py syntax"
 
 echo "== YAML syntax =="
 python3 - "$ROOT/.github/workflows/build-sukisu.yml" <<'PY' && ok "build-sukisu.yml" || bad "build-sukisu.yml"

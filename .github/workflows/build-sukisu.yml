@@ -25,7 +25,7 @@ on:
         default: true
         type: boolean
       ksu_mode:
-        description: 'full | no_susfs | no_ksu (diagnostic bisect for boot failures)'
+        description: 'full | no_susfs | no_ksu | no_policy (diagnostic bisect for boot failures)'
         required: false
         default: 'full'
 
@@ -67,6 +67,11 @@ jobs:
           chmod +x ci/scripts/sukisu-setup.py
           python3 ci/scripts/sukisu-setup.py --kernel "$PWD/kernel"
 
+      - name: Apply no_policy boot bisect
+        if: ${{ inputs.ksu_mode == 'no_policy' }}
+        run: |
+          python3 ci/scripts/diag-no-policy.py --kernel "$PWD/kernel"
+
       - name: Verify 5.4/SUSFS source markers
         run: |
           K=kernel/KernelSU/kernel
@@ -88,6 +93,9 @@ jobs:
           check 'ksu54_cpu_spoof_vdso' "$K/extension/cpu_spoof.c" 'cpu_spoof.c 5.4 clocksource guard missing'
           check 'ksu54_filename_trans' "$K/selinux/sepolicy.c" 'sepolicy.c 5.4 filename transition fallback missing'
           check 'ksu54_policy_unlock' "$K/selinux/rules.c" '5.4 policy status_lock unlock-before-reset missing'
+          if [ "${{ inputs.ksu_mode }}" = "no_policy" ]; then
+            check 'ksu54_diag_no_policy' "$K/runtime/ksud_integration.c" 'no_policy diagnostic marker missing'
+          fi
           check 'ksu54_dispatch_task' "$K/supercall/dispatch.c" 'dispatch.c 5.4 tasklist includes missing'
           check 'ksu54_susfs_sid' "$K/selinux/selinux.c" 'SUSFS SID globals used by avc.c missing'
           check 'ksu54_path_mount' "$K/infra/su_mount_ns.c" '5.4 do_mount fallback missing'
@@ -180,7 +188,7 @@ jobs:
             CFG+=(--disable KSU --disable KSU_SUSFS)
           else
             CFG+=(--enable KSU)
-            if [ "$MODE" = "full" ]; then
+            if [ "$MODE" = "full" ] || [ "$MODE" = "no_policy" ]; then
               CFG+=(--enable KSU_SUSFS \
                 --enable KSU_SUSFS_ENABLE_LOG \
                 --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
@@ -248,7 +256,7 @@ jobs:
             CFG+=(--disable KSU --disable KSU_SUSFS)
           else
             CFG+=(--enable KSU)
-            if [ "$MODE" = "full" ]; then
+            if [ "$MODE" = "full" ] || [ "$MODE" = "no_policy" ]; then
               CFG+=(--enable KSU_SUSFS \
                 --enable KSU_SUSFS_ENABLE_LOG \
                 --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
@@ -369,7 +377,7 @@ jobs:
             - Kernel 5.4.302-${{ env.NEKO_VER }}, ZyC clang 14.0.6
             - Kernel source: Inkypen79/kernel_xiaomi_odin @ resukisu
             - SukiSU-Ultra: ${{ inputs.sukisu_ref || 'v4.3.0-r2' }}, KSU version ${{ env.KSU_VERSION }}
-            - Mode: ${{ inputs.ksu_mode || 'full' }} (diagnostic modes: no_susfs / no_ksu)
+            - Mode: ${{ inputs.ksu_mode || 'full' }} (diagnostic modes: no_susfs / no_ksu / no_policy)
             - SUSFS: odin in-tree v2.1.0 (basic; SET_PRIORITY_UID_FILTER unavailable)
             - 5.4 shims: SELinux policy, sepolicy dup, selinux_hide, block-PMD
             - Package: AnyKernel3 zip (boot partition, device odin)

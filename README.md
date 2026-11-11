@@ -62,8 +62,7 @@
    - `kernel_ref=resukisu`
    - `ksu_version=41150`（仅 tag 构建使用；main 构建会自动计算）
    - `embed_ksud=true`
-   - `ksu_mode=full`：`no_susfs` 只保留 root、关闭 SUSFS；`no_ksu` 构建纯内核，用于排查
-     开机问题。
+   - `ksu_mode=full`：完整 KSU + SUSFS；`no_susfs` 只保留 root、关闭 SUSFS；`no_ksu` 构建纯内核；`no_policy` 保留 KSU/SUSFS 但跳过 `apply_kernelsu_rules()`，用于判断开机问题是否来自 SELinux 策略注入。
 4. 构建完成后下载 `odin-SukiSU-<mode>-<date>-run<N>.zip`，以及 artifact 里的
    `Image` / `kernel.config`。
 
