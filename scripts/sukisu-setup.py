@@ -403,6 +403,41 @@ static struct selinux_policy *ksu54_current_policy(void)
 
     # 5.4 has no selinux_state.policy; keep the generation stable.
     text = text.replace("reset_avc_cache(pol->latest_granting);", "reset_avc_cache(0);")
+
+    # On 5.4 KSU_POLICY_LOCK() is selinux_state.ss->status_lock.  The real
+    # selinux_status_update_policyload() also takes that same non-recursive
+    # mutex, so calling reset_avc_cache() before KSU_POLICY_UNLOCK() deadlocks
+    # at "init second_stage" (the device appears to power off).  Unlock first
+    # on <5.7; the 6.x path keeps the original lock ordering.
+    text = text.replace(
+        "    reset_avc_cache(0);\n"
+        "out_unlock:\n"
+        "    KSU_POLICY_UNLOCK();",
+        "/* ksu54_policy_unlock: status_lock is not recursive */\n"
+        "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)\n"
+        "    KSU_POLICY_UNLOCK();\n"
+        "    reset_avc_cache(0);\n"
+        "    return;\n"
+        "#endif\n"
+        "    reset_avc_cache(0);\n"
+        "out_unlock:\n"
+        "    KSU_POLICY_UNLOCK();",
+    )
+    text = text.replace(
+        "    reset_avc_cache(0);\n"
+        "    ret = success_cmd_count;\n"
+        "    goto out_unlock;",
+        "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)\n"
+        "    KSU_POLICY_UNLOCK();\n"
+        "    reset_avc_cache(0);\n"
+        "    ret = success_cmd_count;\n"
+        "    goto out_free;\n"
+        "#else\n"
+        "    reset_avc_cache(0);\n"
+        "    ret = success_cmd_count;\n"
+        "    goto out_unlock;\n"
+        "#endif",
+    )
     write(path, text)
     print("  selinux/rules.c: 5.4 policy accessors applied")
 

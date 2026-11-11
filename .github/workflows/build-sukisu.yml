@@ -87,6 +87,7 @@ jobs:
           check 'ksu54_allowlist_task' "$K/policy/allowlist.c" 'allowlist.c 5.4 sched/task.h include missing'
           check 'ksu54_cpu_spoof_vdso' "$K/extension/cpu_spoof.c" 'cpu_spoof.c 5.4 clocksource guard missing'
           check 'ksu54_filename_trans' "$K/selinux/sepolicy.c" 'sepolicy.c 5.4 filename transition fallback missing'
+          check 'ksu54_policy_unlock' "$K/selinux/rules.c" '5.4 policy status_lock unlock-before-reset missing'
           check 'ksu54_dispatch_task' "$K/supercall/dispatch.c" 'dispatch.c 5.4 tasklist includes missing'
           check 'ksu54_susfs_sid' "$K/selinux/selinux.c" 'SUSFS SID globals used by avc.c missing'
           check 'ksu54_path_mount' "$K/infra/su_mount_ns.c" '5.4 do_mount fallback missing'
