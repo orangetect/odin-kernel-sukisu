@@ -429,28 +429,45 @@ struct selinux_policy *ksu_dup_sepolicy(struct selinux_policy *old_pol)
 	struct selinux_policy *new_pol;
 	struct policy_file fp;
 	void *data;
-	size_t len;
+	size_t len, buf_len;
 	int ret;
 
-	len = old_pol->policydb.len;
-	data = vmalloc(len);
-	if (!data)
+	/* policydb_read() adds every type to its own attribute map; preserve
+	 * room for one ebitmap entry per type so the buffer cannot overflow. */
+	buf_len = old_pol->policydb.len +
+		  (size_t)old_pol->policydb.p_types.nprim *
+			  (sizeof(u32) + sizeof(u64));
+	data = vmalloc(buf_len);
+	if (!data) {
+		pr_err("sepolicy54: alloc policy buffer len %zu\n", buf_len);
 		return ERR_PTR(-ENOMEM);
+	}
 
 	fp.data = data;
-	fp.len = len;
+	fp.len = buf_len;
 	ret = policydb_write(&old_pol->policydb, &fp);
 	if (ret) {
 		pr_err("sepolicy54: policydb_write: %d\n", ret);
 		goto out_free_data;
 	}
-	len -= fp.len;
+	len = buf_len - fp.len;
 
-	new_pol = kzalloc(sizeof(*new_pol), GFP_KERNEL);
+	/* 5.4 keeps the Android netlink config bits in policydb; older
+	 * policydb_read() rejects a written image without them. */
+	if (len >= 20 + sizeof(u32)) {
+		u32 *config_ptr = (u32 *)((unsigned long)data + 20);
+		if (old_pol->policydb.android_netlink_route)
+			*config_ptr |= POLICYDB_CONFIG_ANDROID_NETLINK_ROUTE;
+		if (old_pol->policydb.android_netlink_getneigh)
+			*config_ptr |= POLICYDB_CONFIG_ANDROID_NETLINK_GETNEIGH;
+	}
+
+	new_pol = kmemdup(old_pol, sizeof(*old_pol), GFP_KERNEL);
 	if (!new_pol) {
 		ret = -ENOMEM;
 		goto out_free_data;
 	}
+	memset(&new_pol->policydb, 0, sizeof(new_pol->policydb));
 
 	fp.data = data;
 	fp.len = len;
