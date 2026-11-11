@@ -30,6 +30,9 @@
   `ksu_handle_*` 手动调用点**。
 - odin 内核树自带的 SUSFS v2.1.0：`sus_path`、`sus_mount`、`sus_kstat`、`open_redirect`、
   `sus_map`、`spoof_uname`、`spoof_cmdline` 等基础功能。
+- SukiSU 的 SUSFS 控制面已接上：`reboot(SUSFS_MAGIC, ...)` 命令在 `reboot` kprobe 里
+  转入 `task_work`，再分发给 odin `fs/susfs.c` 的各命令处理函数；启动完成时调用
+  `susfs_start_sdcard_monitor_fn()`。
 - 5.4 兼容层：
   - `struct selinux_policy` / `selinux_state.policy` → `selinux_state.ss` 影子策略；
   - `ksu_dup_sepolicy()` / `ksu_destroy_sepolicy()` 的 5.4 `policydb_write/read` 回移；

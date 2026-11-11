@@ -76,6 +76,9 @@ jobs:
           check 'susfs_is_current_ksu_domain' "$K/selinux/selinux.c" 'SUSFS domain wrapper missing'
           check 'config KSU_SUSFS' "$K/Kconfig" 'KSU_SUSFS Kconfig missing'
           check 'susfs_init();' "$K/core/init.c" 'susfs_init() call missing'
+          check 'ksu_handle_susfs_command' "$K/extension/susfs_extension.c" 'SUSFS command dispatcher missing'
+          check 'SUSFS_MAGIC' "$K/supercall/supercall.c" 'SUSFS reboot hook missing'
+          check 'susfs_start_sdcard_monitor_fn' "$K/runtime/boot_event.c" 'SUSFS sdcard monitor call missing'
           if grep -q 'ksu_handle_execveat' kernel/fs/exec.c; then
             echo "::error::legacy ksu_handle_execveat call site still present in fs/exec.c"
             fail=1
@@ -204,7 +207,7 @@ jobs:
           # SukiSU Kbuild has VERSION_BASE=40000 / OFFSET=2815 and normally
           # derives the count from main; pin to the release tag's 41150.
           make -j"$(nproc)" O=out LOCALVERSION="-$NEKO_VER" \
-            KSU_VERSION="$KSU_VERSION" KSU_VERSION_FULL="$KSU_VERSION" \
+            KSU_VERSION="$KSU_VERSION" KSU_VERSION_FULL="${{ inputs.sukisu_ref || 'v4.3.0-r2' }}" \
             Image Image.gz
 
           grep -E '^CONFIG_(KSU|KSU_SUSFS|KPROBES|EXT4_FS)=' out/.config || true

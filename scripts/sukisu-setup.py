@@ -629,6 +629,217 @@ bool susfs_is_current_ksu_domain(void)
     print("  selinux/selinux.c: susfs_is_current_ksu_domain() wrapper")
 
 
+def patch_susfs_dispatch(su: Path) -> None:
+    """Wire the in-tree SUSFS v2.1.0 command ABI into SukiSU.
+
+    SukiSU main only ships a stub extension handler; ksud still sends every
+    SUSFS command through reboot(KSU_INSTALL_MAGIC1, SUSFS_MAGIC, cmd, payload).
+    The old KernelSU submodule used to provide this dispatcher; the odin
+    fs/susfs.c only defines the individual command functions.
+    """
+    path = su / "extension/susfs_extension.c"
+    text = read(path)
+    if "ksu_handle_susfs_command" in text:
+        print("  extension/susfs_extension.c: SUSFS command dispatch already applied")
+        return
+    for inc in ("#include <linux/cred.h>", "#include <linux/susfs.h>", "#include <linux/susfs_def.h>"):
+        if inc not in text:
+            text = replace_once(
+                text,
+                "#include <linux/errno.h>\n",
+                "#include <linux/errno.h>\n" + inc + "\n",
+                "susfs_extension includes",
+            )
+    text += r'''
+
+#ifdef CONFIG_KSU_SUSFS
+/*
+ * ksu_handle_susfs_command - dispatch the reboot(2)-based SUSFS ABI.
+ *
+ * ksud passes a user pointer to the command payload.  The SUSFS helpers take
+ * a kernel pointer to that user pointer, so keep a local copy and hand its
+ * address to them.  This runs from task_work, never from kprobe context, so
+ * sleeping operations (kern_path, copy_from_user, mutexes) are safe.
+ */
+int ksu_handle_susfs_command(unsigned int cmd, void __user *payload)
+{
+    void __user *p = payload;
+
+    if (current_uid().val != 0)
+        return -EPERM;
+
+    switch (cmd) {
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+    case CMD_SUSFS_ADD_SUS_PATH:
+        susfs_add_sus_path(&p);
+        return 0;
+    case CMD_SUSFS_ADD_SUS_PATH_LOOP:
+        susfs_add_sus_path_loop(&p);
+        return 0;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+    case CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS:
+        susfs_set_hide_sus_mnts_for_non_su_procs(&p);
+        return 0;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+    case CMD_SUSFS_ADD_SUS_KSTAT:
+    case CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY:
+        susfs_add_sus_kstat(&p);
+        return 0;
+    case CMD_SUSFS_UPDATE_SUS_KSTAT:
+        susfs_update_sus_kstat(&p);
+        return 0;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+    case CMD_SUSFS_SET_UNAME:
+        susfs_set_uname(&p);
+        return 0;
+#endif
+#ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
+    case CMD_SUSFS_ENABLE_LOG:
+        susfs_enable_log(&p);
+        return 0;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+    case CMD_SUSFS_SET_CMDLINE_OR_BOOTCONFIG:
+        susfs_set_cmdline_or_bootconfig(&p);
+        return 0;
+#endif
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+    case CMD_SUSFS_ADD_OPEN_REDIRECT:
+        susfs_add_open_redirect(&p);
+        return 0;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+    case CMD_SUSFS_ADD_SUS_MAP:
+        susfs_add_sus_map(&p);
+        return 0;
+#endif
+    case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING:
+        susfs_set_avc_log_spoofing(&p);
+        return 0;
+    case CMD_SUSFS_SHOW_ENABLED_FEATURES:
+        susfs_get_enabled_features(&p);
+        return 0;
+    case CMD_SUSFS_SHOW_VARIANT:
+        susfs_show_variant(&p);
+        return 0;
+    case CMD_SUSFS_SHOW_VERSION:
+        susfs_show_version(&p);
+        return 0;
+    default:
+        return -EINVAL;
+    }
+}
+#endif /* CONFIG_KSU_SUSFS */
+'''
+    write(path, text)
+    print("  extension/susfs_extension.c: SUSFS command dispatch (reboot ABI)")
+
+
+def patch_susfs_reboot_hook(su: Path) -> None:
+    """Schedule SUSFS reboot-ABI commands from SukiSU's reboot kprobe.
+
+    The kprobe pre_handler is atomic; queue a task_work callback so the SUSFS
+    helpers can sleep.  ksud's payload pointer is still valid when task_work
+    runs on the return-to-user path.
+    """
+    path = su / "supercall/supercall.c"
+    text = read(path)
+    if "ksu_susfs_tw_func" in text:
+        print("  supercall/supercall.c: SUSFS reboot hook already applied")
+        return
+    text = replace_once(
+        text,
+        "#include <linux/version.h>\n",
+        "#include <linux/version.h>\n"
+        "#ifdef CONFIG_KSU_SUSFS\n"
+        "#include <linux/susfs_def.h>\n"
+        "extern int ksu_handle_susfs_command(unsigned int cmd, void __user *payload);\n"
+        "struct ksu_susfs_tw {\n"
+        "    struct callback_head cb;\n"
+        "    unsigned int cmd;\n"
+        "    void __user *payload;\n"
+        "};\n"
+        "static void ksu_susfs_tw_func(struct callback_head *cb)\n"
+        "{\n"
+        "    struct ksu_susfs_tw *tw = container_of(cb, struct ksu_susfs_tw, cb);\n"
+        "    ksu_handle_susfs_command(tw->cmd, tw->payload);\n"
+        "    kfree(tw);\n"
+        "}\n"
+        "#endif\n",
+        "supercall susfs includes",
+    )
+    text = replace_once(
+        text,
+        "        if (task_work_add(current, &tw->cb, TWA_RESUME)) {\n"
+        "            kfree(tw);\n"
+        "            pr_warn(\"install fd add task_work failed\\n\");\n"
+        "        }\n"
+        "    }\n"
+        "\n"
+        "    return 0;\n"
+        "}",
+        "        if (task_work_add(current, &tw->cb, TWA_RESUME)) {\n"
+        "            kfree(tw);\n"
+        "            pr_warn(\"install fd add task_work failed\\n\");\n"
+        "        }\n"
+        "    }\n"
+        "\n"
+        "#ifdef CONFIG_KSU_SUSFS\n"
+        "    if (magic1 == KSU_INSTALL_MAGIC1 && (unsigned int)magic2 == SUSFS_MAGIC) {\n"
+        "        struct ksu_susfs_tw *tw;\n"
+        "        unsigned int cmd = (unsigned int)PT_REGS_PARM3(real_regs);\n"
+        "        void __user *payload = (void __user *)PT_REGS_SYSCALL_PARM4(real_regs);\n"
+        "\n"
+        "        tw = kzalloc(sizeof(*tw), GFP_ATOMIC);\n"
+        "        if (!tw)\n"
+        "            return 0;\n"
+        "        tw->cmd = cmd;\n"
+        "        tw->payload = payload;\n"
+        "        tw->cb.func = ksu_susfs_tw_func;\n"
+        "        if (task_work_add(current, &tw->cb, TWA_RESUME)) {\n"
+        "            kfree(tw);\n"
+        "            pr_warn(\"susfs add task_work failed\\n\");\n"
+        "        }\n"
+        "    }\n"
+        "#endif\n"
+        "\n"
+        "    return 0;\n"
+        "}",
+        "supercall reboot kprobe",
+    )
+    write(path, text)
+    print("  supercall/supercall.c: SUSFS reboot task_work hook")
+
+
+def patch_susfs_sdcard_monitor(su: Path) -> None:
+    path = su / "runtime/boot_event.c"
+    text = read(path)
+    if "susfs_start_sdcard_monitor_fn" in text:
+        print("  runtime/boot_event.c: sdcard monitor already started")
+        return
+    if "#include <linux/susfs.h>" not in text:
+        text = replace_once(
+            text,
+            "#include <linux/printk.h>\n",
+            "#include <linux/printk.h>\n#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs.h>\n#endif\n",
+            "boot_event susfs include",
+        )
+    text = replace_once(
+        text,
+        "    ksu_avc_spoof_late_init();\n",
+        "    ksu_avc_spoof_late_init();\n"
+        "#ifdef CONFIG_KSU_SUSFS\n"
+        "    susfs_start_sdcard_monitor_fn();\n"
+        "#endif\n",
+        "boot_event sdcard monitor call",
+    )
+    write(path, text)
+    print("  runtime/boot_event.c: susfs_start_sdcard_monitor_fn()")
+
+
 def ensure_driver_links(kdir: Path, su: Path) -> None:
     """The setup.sh symlink is normally created by the workflow; make the
     script self-sufficient for local/static verification."""
@@ -681,6 +892,9 @@ def main() -> None:
     patch_patch_memory(su)
     patch_core_init(su)
     patch_selinux_wrapper(su)
+    patch_susfs_dispatch(su)
+    patch_susfs_reboot_hook(su)
+    patch_susfs_sdcard_monitor(su)
 
     print("[sukisu-setup] done")
 

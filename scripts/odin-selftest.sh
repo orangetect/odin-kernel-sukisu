@@ -31,6 +31,7 @@ PY
 echo "== setup script markers =="
 for marker in KSU54_SELINUX_POLICY_SHIM KSU54_POLICY_FIELD ksu54_sepolicy_backport \
               ksu54_selinux_hide_54 ksu54_pmd_sect susfs_is_current_ksu_domain \
+              ksu_handle_susfs_command susfs_start_sdcard_monitor_fn \
               'config KSU_SUSFS'; do
   grepf "$marker" scripts/sukisu-setup.py "setup emits $marker"
 done
