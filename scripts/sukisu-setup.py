@@ -222,6 +222,31 @@ def install_compat_header(kdir: Path, su: Path, script_dir: Path) -> None:
         print("  installed 5.4 header into include/linux/ksu54_compat.h")
 
 
+def install_header_shims(kdir: Path) -> None:
+    """Provide headers that were split out after 5.4.
+
+    SukiSU/ksud upstream includes <linux/hex.h> and <linux/minmax.h>; this
+    vendor 5.4 tree still declares those APIs in <linux/kernel.h>.
+    """
+    shims = {
+        "hex.h": "#include <linux/kernel.h>\n",
+        "minmax.h": "#include <linux/kernel.h>\n",
+        "pgtable.h": "#include <asm/pgtable.h>\n",
+        "unaligned.h": "#include <asm-generic/unaligned.h>\n",
+    }
+    inc = kdir / "include/linux"
+    inc.mkdir(parents=True, exist_ok=True)
+    for name, include in shims.items():
+        dest = inc / name
+        if dest.exists():
+            continue
+        dest.write_text(
+            "/* ksu54_header_shim: split out after Linux 5.4. */\n" + include,
+            encoding="utf-8",
+        )
+        print(f"  include/linux/{name}: 5.4 header shim")
+
+
 def add_susfs_kconfig(su: Path) -> None:
     path = su / "Kconfig"
     text = read(path)
@@ -968,6 +993,7 @@ def main() -> None:
 
     ensure_driver_links(kdir, su)
     install_compat_header(kdir, su, script_dir)
+    install_header_shims(kdir)
     strip_legacy_hooks(kdir)
     add_susfs_kconfig(su)
     patch_sepolicy_h(su)
