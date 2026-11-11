@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 sukisu-setup.py - make SukiSU-Ultra v4.3.0-r2 build on the odin 5.4 vendor tree.
 
