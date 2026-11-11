@@ -757,6 +757,76 @@ def patch_cpu_spoof_vdso(su: Path) -> None:
     print("  extension/cpu_spoof.c: 5.4 clocksource vdso guard")
 
 
+def patch_sepolicy_filename_trans(su: Path) -> None:
+    """5.4 has no filename_trans_key/datum chain.
+
+    The old table keys on ``struct filename_trans`` and stores only an otype.
+    SukiSU's 5.9+ key/datum list cannot be built there.  FinaSU's 5.4 port
+    falls back to a type transition, which is the closest policy equivalent
+    and is what ksu_type_transition() uses for kernels without filename
+    transitions.
+    """
+    path = su / "selinux/sepolicy.c"
+    text = read(path)
+    if "ksu54_filename_trans" in text:
+        return
+
+    head = (
+        "static bool add_filename_trans(struct policydb *db, const char *s, "
+        "const char *t, const char *c, const char *d,\n"
+        "                               const char *o)\n"
+        "{\n"
+    )
+    fallback = (
+        head
+        + "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)\n"
+        + "    /* ksu54_filename_trans: 5.4's filename_trans table has no\n"
+        + "     * filename_trans_key/datum chain; use a type transition. */\n"
+        + "    return add_type_rule(db, s, t, c, d, AVTAB_TRANSITION);\n"
+        + "#else\n"
+    )
+    text = replace_once(text, head, fallback, "sepolicy add_filename_trans 5.4 fallback")
+
+    tail = (
+        "out:\n"
+        "    return false;\n"
+        "}\n"
+        "\n"
+        "static bool add_genfscon("
+    )
+    tail_new = (
+        "out:\n"
+        "    return false;\n"
+        "#endif /* ksu54_filename_trans */\n"
+        "}\n"
+        "\n"
+        "static bool add_genfscon("
+    )
+    text = replace_once(text, tail, tail_new, "sepolicy add_filename_trans 5.4 guard end")
+    write(path, text)
+    print("  selinux/sepolicy.c: 5.4 filename transition fallback")
+
+
+def patch_dispatch_task(su: Path) -> None:
+    """Include the headers that declare tasklist_lock/init_task on 5.4."""
+    path = su / "supercall/dispatch.c"
+    text = read(path)
+    if "ksu54_dispatch_task" in text:
+        return
+
+    old = "#include <linux/version.h>\n"
+    new = (
+        old
+        + "/* ksu54_dispatch_task: 5.4 declares tasklist_lock/init_task in\n"
+        + " * sched/task.h and task_pgrp()/task_session() in sched/signal.h. */\n"
+        + "#include <linux/sched/signal.h>\n"
+        + "#include <linux/sched/task.h>\n"
+    )
+    text = replace_once(text, old, new, "dispatch sched task includes")
+    write(path, text)
+    print("  supercall/dispatch.c: 5.4 sched task includes")
+
+
 def patch_core_init(su: Path) -> None:
     path = su / "core/init.c"
     text = read(path)
@@ -1118,6 +1188,8 @@ def main() -> None:
     patch_pkg_observer_fsnotify(su)
     patch_allowlist_task(su)
     patch_cpu_spoof_vdso(su)
+    patch_sepolicy_filename_trans(su)
+    patch_dispatch_task(su)
     patch_core_init(su)
     patch_selinux_wrapper(su)
     patch_susfs_dispatch(su)

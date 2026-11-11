@@ -82,6 +82,8 @@ jobs:
           check 'ksu54_pkg_observer_fsnotify' "$K/manager/pkg_observer.c" 'pkg_observer.c 5.4 fsnotify handle_event shim missing'
           check 'ksu54_allowlist_task' "$K/policy/allowlist.c" 'allowlist.c 5.4 sched/task.h include missing'
           check 'ksu54_cpu_spoof_vdso' "$K/extension/cpu_spoof.c" 'cpu_spoof.c 5.4 clocksource guard missing'
+          check 'ksu54_filename_trans' "$K/selinux/sepolicy.c" 'sepolicy.c 5.4 filename transition fallback missing'
+          check 'ksu54_dispatch_task' "$K/supercall/dispatch.c" 'dispatch.c 5.4 tasklist includes missing'
           check 'ksu54_header_shim' "kernel/include/linux/minmax.h" '5.4 minmax.h header shim missing'
           check 'ksu54_header_shim' "kernel/include/linux/hex.h" '5.4 hex.h header shim missing'
           check 'susfs_is_current_ksu_domain' "$K/selinux/selinux.c" 'SUSFS domain wrapper missing'
@@ -102,11 +104,10 @@ jobs:
           [ "$fail" -eq 0 ] || exit 1
           echo "source markers: PASS"
 
-      - name: Scheduler/power patches
+      - name: Scheduler patches
         run: |
           chmod +x ci/scripts/sched-tune.sh ci/scripts/power-tune.sh
           bash ci/scripts/sched-tune.sh "$PWD/kernel" || echo "::warning::sched patches partially applied"
-          bash ci/scripts/power-tune.sh "$PWD/kernel" || echo "::warning::power patches partially applied"
 
       - name: Free disk space
         run: |
@@ -180,6 +181,9 @@ jobs:
             --enable KSU_SUSFS_SUS_MOUNT \
             --enable KSU_SUSFS_SUS_PATH
           make -j"$(nproc)" O=out olddefconfig
+
+          # power-tune edits out/.config, so it must run after odin_defconfig.
+          bash ../ci/scripts/power-tune.sh "$PWD" || echo "::warning::power tune skipped"
 
           make -j"$(nproc)" O=out security/selinux/
           make -j"$(nproc)" O=out drivers/kernelsu/
