@@ -266,7 +266,12 @@ jobs:
           cp ../kernel/out/arch/arm64/boot/Image .
 
           if [ "${{ inputs.embed_ksud }}" = "true" ]; then
-            KSURL="https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases/download/${{ inputs.sukisu_ref || 'v4.3.0-r2' }}/ksud-aarch64-linux-android"
+            # main has no release asset; use the newest published ksud.  A
+            # main kernel reports a higher KSU_VERSION, which the tagged
+            # ksud accepts, so this remains a valid combination.
+            KSREF="${{ inputs.sukisu_ref || 'v4.3.0-r2' }}"
+            if [ "$KSREF" = "main" ]; then KSREF="v4.3.0-r2"; fi
+            KSURL="https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases/download/$KSREF/ksud-aarch64-linux-android"
             curl -fL --retry 3 --connect-timeout 20 -o ./ksud "$KSURL"
             chmod 755 ./ksud
             echo "ksud embedded: $(stat -c %s ./ksud) bytes"
