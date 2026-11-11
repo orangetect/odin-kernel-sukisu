@@ -700,6 +700,63 @@ def patch_pkg_observer_fsnotify(su: Path) -> None:
     print("  manager/pkg_observer.c: 5.4 fsnotify handle_event wrapper")
 
 
+def patch_allowlist_task(su: Path) -> None:
+    """Include sched/task.h for put_task_struct() on 5.4."""
+    path = su / "policy/allowlist.c"
+    text = read(path)
+    if "ksu54_allowlist_task" in text:
+        return
+    line = "#include <linux/sched/task.h>\n"
+    if line in text:
+        return
+    old = "#include <linux/version.h>\n"
+    new = (
+        old
+        + "/* ksu54_allowlist_task: put_task_struct() lives in sched/task.h on 5.4. */\n"
+        + line
+    )
+    text = replace_once(text, old, new, "allowlist sched/task.h include")
+    write(path, text)
+    print("  policy/allowlist.c: include sched/task.h for put_task_struct()")
+
+
+def patch_cpu_spoof_vdso(su: Path) -> None:
+    """5.4 struct clocksource has no vdso_clock_mode field."""
+    path = su / "extension/cpu_spoof.c"
+    text = read(path)
+    if "ksu54_cpu_spoof_vdso" in text:
+        return
+
+    old = (
+        "                    if (curr_cs_ptr && *curr_cs_ptr) {\n"
+        "                        (*curr_cs_ptr)->vdso_clock_mode =\n"
+        "                            VDSO_CLOCKMODE_ARCHTIMER;\n"
+        "                    } else {\n"
+        "                        pr_warn(\"ksu: set_spoof_cpu failed to resolve 'curr_clocksource'\\n\");\n"
+        "                        ++missing;\n"
+        "                    }\n"
+    )
+    new = (
+        "#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)\n"
+        "                    if (curr_cs_ptr && *curr_cs_ptr) {\n"
+        "                        (*curr_cs_ptr)->vdso_clock_mode =\n"
+        "                            VDSO_CLOCKMODE_ARCHTIMER;\n"
+        "                    } else {\n"
+        "                        pr_warn(\"ksu: set_spoof_cpu failed to resolve 'curr_clocksource'\\n\");\n"
+        "                        ++missing;\n"
+        "                    }\n"
+        "#else\n"
+        "                    /* ksu54_cpu_spoof_vdso: 5.4 clocksource has no\n"
+        "                     * vdso_clock_mode; the vDSO mode is set through\n"
+        "                     * vdso_data / vdso_default above. */\n"
+        "                    (void)curr_cs_ptr;\n"
+        "#endif\n"
+    )
+    text = replace_once(text, old, new, "cpu_spoof clocksource vdso_clock_mode")
+    write(path, text)
+    print("  extension/cpu_spoof.c: 5.4 clocksource vdso guard")
+
+
 def patch_core_init(su: Path) -> None:
     path = su / "core/init.c"
     text = read(path)
@@ -1059,6 +1116,8 @@ def main() -> None:
     patch_patch_memory(su)
     patch_sucompat_pgtable(su)
     patch_pkg_observer_fsnotify(su)
+    patch_allowlist_task(su)
+    patch_cpu_spoof_vdso(su)
     patch_core_init(su)
     patch_selinux_wrapper(su)
     patch_susfs_dispatch(su)

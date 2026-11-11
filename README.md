@@ -43,6 +43,7 @@
   - `phys_from_virt()` 的 5.4 block-PMD 识别（否则 `sys_call_table` 补丁失败，
     `ksud` 永远不会启动，管理器就会显示“未 root”）；
 - `pkg_observer` 的 5.4 `fsnotify_ops.handle_event` 适配（5.4 没有 `handle_inode_event` 字段）；
+  - `put_task_struct()` 的 `sched/task.h` 头文件、`clocksource.vdso_clock_mode` 的 5.4 保护；
   - 删除 odin 树里旧 ReSukiSU 的 `ksu_handle_execveat/faccessat/stat/...` 调用点。
 - 输入 boost 关闭、io-is-busy 关闭、schedutil 使用 PELT 的调度补丁（沿用 FinaSU 仓库）。
 - AnyKernel3 包内内置与 v4.3.0-r2 匹配的 `ksud-aarch64-linux-android`。

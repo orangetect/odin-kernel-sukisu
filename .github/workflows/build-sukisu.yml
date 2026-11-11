@@ -80,6 +80,8 @@ jobs:
           check 'ksu54_pmd_sect' "$K/hook/arm64/patch_memory.c" 'patch_memory.c 5.4 block-PMD fix missing'
           check 'ksu54_sucompat_pgtable' "$K/feature/sucompat.c" 'sucompat.c 5.4 pgtable include fallback missing'
           check 'ksu54_pkg_observer_fsnotify' "$K/manager/pkg_observer.c" 'pkg_observer.c 5.4 fsnotify handle_event shim missing'
+          check 'ksu54_allowlist_task' "$K/policy/allowlist.c" 'allowlist.c 5.4 sched/task.h include missing'
+          check 'ksu54_cpu_spoof_vdso' "$K/extension/cpu_spoof.c" 'cpu_spoof.c 5.4 clocksource guard missing'
           check 'ksu54_header_shim' "kernel/include/linux/minmax.h" '5.4 minmax.h header shim missing'
           check 'ksu54_header_shim' "kernel/include/linux/hex.h" '5.4 hex.h header shim missing'
           check 'susfs_is_current_ksu_domain' "$K/selinux/selinux.c" 'SUSFS domain wrapper missing'
