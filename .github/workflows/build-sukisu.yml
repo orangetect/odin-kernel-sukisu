@@ -50,6 +50,11 @@ jobs:
           rm -rf kernel/KernelSU
           git clone --depth 1 --branch "${{ inputs.sukisu_ref || 'v4.3.0-r2' }}" \
             https://github.com/SukiSU-Ultra/SukiSU-Ultra.git kernel/KernelSU
+          # KSU_VERSION is 40000 + commit-count - 2815; a shallow clone would
+          # report 37186 and the manager would reject the kernel.  Unshallow
+          # also makes the tag/main version calculation deterministic.
+          git -C kernel/KernelSU fetch --unshallow --tags 2>/dev/null || true
+          echo "SukiSU commits: $(git -C kernel/KernelSU rev-list --count HEAD)"
           echo "SukiSU HEAD: $(git -C kernel/KernelSU rev-parse --short HEAD)"
           echo "SukiSU tag : $(git -C kernel/KernelSU describe --tags --always 2>/dev/null || echo unknown)"
 
@@ -174,6 +179,24 @@ jobs:
           make -j"$(nproc)" O=out drivers/kernelsu/
           echo "=== fast gate: PASS ==="
 
+      - name: Resolve SukiSU version
+        id: sukisu_version
+        env:
+          SUKISU_REF: ${{ inputs.sukisu_ref || 'v4.3.0-r2' }}
+          KSU_VERSION_INPUT: ${{ inputs.ksu_version || '41150' }}
+        run: |
+          if [ "$SUKISU_REF" = "main" ]; then
+            count=$(git -C kernel/KernelSU rev-list --count HEAD)
+            value=$((40000 + count - 2815))
+            full="main-$(git -C kernel/KernelSU rev-parse --short HEAD)"
+          else
+            value="$KSU_VERSION_INPUT"
+            full="$SUKISU_REF"
+          fi
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "SukiSU version: $value ($full)"
+
       - name: Build kernel
         run: |
           cd kernel
@@ -182,7 +205,8 @@ jobs:
           export CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm
           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip READELF=llvm-readelf
 
-          KSU_VERSION="${{ inputs.ksu_version || '41150' }}"
+          KSU_VERSION="${{ steps.sukisu_version.outputs.value }}"
+          KSU_VERSION_FULL="${{ steps.sukisu_version.outputs.full }}"
           NEKO_VER="SukiSU-$(date +%Y%m%d)-$(od -An -N2 -tu2 /dev/urandom | tr -d ' ')"
           echo "NEKO_VER=$NEKO_VER" >> "$GITHUB_ENV"
           echo "KSU_VERSION=$KSU_VERSION" >> "$GITHUB_ENV"
@@ -205,10 +229,10 @@ jobs:
             --enable KSU_SUSFS_SUS_PATH
           make -j"$(nproc)" O=out olddefconfig
 
-          # SukiSU Kbuild has VERSION_BASE=40000 / OFFSET=2815 and normally
-          # derives the count from main; pin to the release tag's 41150.
+          # SukiSU Kbuild has VERSION_BASE=40000 / OFFSET=2815; the release
+          # tag is pinned to 41150, main is derived from its full commit count.
           make -j"$(nproc)" O=out LOCALVERSION="-$NEKO_VER" \
-            KSU_VERSION="$KSU_VERSION" KSU_VERSION_FULL="${{ inputs.sukisu_ref || 'v4.3.0-r2' }}" \
+            KSU_VERSION="$KSU_VERSION" KSU_VERSION_FULL="$KSU_VERSION_FULL" \
             Image Image.gz
 
           grep -E '^CONFIG_(KSU|KSU_SUSFS|KPROBES|EXT4_FS)=' out/.config || true

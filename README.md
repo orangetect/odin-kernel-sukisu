@@ -51,9 +51,9 @@
 1. 把本目录推到自己的 GitHub 仓库。
 2. Actions → **Build odin kernel with SukiSU-Ultra (5.4 + SUSFS)** → Run workflow。
 3. 默认参数：
-   - `sukisu_ref=v4.3.0-r2`
+   - `sukisu_ref=v4.3.0-r2`（也可以填 `main`；main 版本号会按完整提交数计算）
    - `kernel_ref=resukisu`
-   - `ksu_version=41150`
+   - `ksu_version=41150`（仅 tag 构建使用；main 构建会自动计算）
    - `embed_ksud=true`
 4. 构建完成后下载 `odin-SukiSU-<date>-run<N>.zip`，以及 artifact 里的 `Image` / `kernel.config`。
 
